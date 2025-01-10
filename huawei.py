@@ -1,12 +1,15 @@
+import tkinter as tk
+from tkinter import font
+from tkinter import messagebox
+from tkinter import ttk
 from netmiko import ConnectHandler
 from datetime import datetime
 import getpass
-import sys
-import ipaddress
-import threading
-from queue import Queue
 import os
 import time
+import threading
+from queue import Queue
+import ipaddress
 
 def backup_huawei_config(host, username, password, result_queue=None, backup_folder='backup'):
     """备份单个设备的配置"""
@@ -69,172 +72,123 @@ def backup_huawei_config(host, username, password, result_queue=None, backup_fol
         result_queue.put(result)
     return result
 
-def get_ip_addresses():
-    """获取用户输入的IP地址或地址段"""
-    while True:
-        print("\n请选择输入方式：")
-        print("1. 单个IP地址")
-        print("2. IP地址段（CIDR格式，如192.168.1.0/24）")
-        print("3. IP地址范围（如192.168.1.1-192.168.1.10）")
-        choice = input("请选择 (1/2/3): ").strip()
+def get_ip_addresses(ip_text):
+    ip_list = []
+    for line in ip_text.splitlines():
+        line = line.strip()
+        if line:  # 只处理非空行
+            try:
+                # 处理单个IP地址
+                ip = ipaddress.ip_address(line)
+                ip_list.append(str(ip))
+            except ValueError:
+                try:
+                    # 处理CIDR地址段
+                    network = ipaddress.ip_network(line, strict=False)
+                    ip_list.extend([str(ip) for ip in network.hosts()])
+                except ValueError:
+                    try:
+                        # 处理IP地址范围
+                        start_ip, end_ip = line.split('-')
+                        start = int(ipaddress.IPv4Address(start_ip.strip()))
+                        end = int(ipaddress.IPv4Address(end_ip.strip()))
+                        if start > end:
+                            raise ValueError("起始IP不能大于结束IP")
+                        ip_list.extend([str(ipaddress.IPv4Address(ip)) for ip in range(start, end + 1)])
+                    except Exception:
+                        messagebox.showerror("错误", f"无效的IP地址或范围: {line}")
+    return ip_list
 
-        try:
-            if choice == '1':
-                ip = input("请输入IP地址: ").strip()
-                # 验证IP地址格式
-                ipaddress.ip_address(ip)
-                return [ip]
-            
-            elif choice == '2':
-                cidr = input("请输入CIDR地址段 (例如:192.168.1.0/24): ").strip()
-                network = ipaddress.ip_network(cidr, strict=False)
-                return [str(ip) for ip in network.hosts()]
-            
-            elif choice == '3':
-                start_ip = input("请输入起始IP: ").strip()
-                end_ip = input("请输入结束IP: ").strip()
-                
-                # 转换IP地址为整数进行比较
-                start = int(ipaddress.IPv4Address(start_ip))
-                end = int(ipaddress.IPv4Address(end_ip))
-                
-                if start > end:
-                    print("起始IP不能大于结束IP")
-                    continue
-                    
-                return [str(ipaddress.IPv4Address(ip)) 
-                        for ip in range(start, end + 1)]
-            else:
-                print("无效的选择，请重试")
-                continue
-                
-        except ValueError as e:
-            print(f"输入格式错误: {e}")
-            continue
-            
-        except Exception as e:
-            print(f"发生错误: {e}")
-            continue
+def start_backup(ip_list, username, password, progress_bar):
+    result_queue = Queue()
+    progress_bar.start()  # 开始进度条
 
-def get_credentials():
-    """获取登录凭证"""
-    username = input("\n请输入用户名: ").strip()
-    password = getpass.getpass("请输入密码: ")
-    return username, password
+    def backup_thread(ip):
+        backup_huawei_config(ip, username, password, result_queue)
 
-def main():
-    try:
-        # 创建备份文件夹
-        backup_folder = "backup"
-        os.makedirs(backup_folder, exist_ok=True)
-        print(f"\n备份文件将保存在: {backup_folder}")
+    threads = []
+    for ip in ip_list:
+        thread = threading.Thread(target=backup_thread, args=(ip,))
+        thread.start()
+        threads.append(thread)
 
-        # 获取IP地址列表
-        ip_list = get_ip_addresses()
-        if not ip_list:
-            print("没有有效的IP地址")
-            return
+    for thread in threads:
+        thread.join()  # 等待所有线程完成
 
-        print(f"\n共发现 {len(ip_list)} 个IP地址")
-        
-        # 获取登录凭证
-        username, password = get_credentials()
+    progress_bar.stop()  # 停止进度条
+    results = [result_queue.get() for _ in ip_list]
+    summary = "\n".join([f"{r['host']}: {r['status']}" for r in results])
+    messagebox.showinfo("备份结果", f"备份完成:\n{summary}")
 
-        # 询问是否使用多线程
-        use_threads = input("\n是否使用多线程备份? (y/n): ").strip().lower() == 'y'
-        
-        # 开始时间
-        start_time = time.time()
-        
-        results = []
-        if use_threads:
-            threads = []
-            result_queue = Queue()
-            
-            for host in ip_list:
-                thread = threading.Thread(
-                    target=backup_huawei_config,
-                    args=(host, username, password, result_queue, backup_folder)
-                )
-                thread.start()
-                threads.append(thread)
-            
-            # 等待所有线程完成
-            for thread in threads:
-                thread.join()
-            
-            # 收集结果
-            while not result_queue.empty():
-                results.append(result_queue.get())
-        else:
-            # 串行处理
-            for host in ip_list:
-                result = backup_huawei_config(host, username, password,
-                                           backup_folder=backup_folder)
-                results.append(result)
+def on_backup():
+    ip_text = ip_text_area.get("1.0", tk.END)  # 获取文本框内容
+    username = username_entry.get()
+    password = password_entry.get()
+    if not ip_text.strip() or not username or not password:
+        messagebox.showerror("错误", "请填写所有字段")
+        return
 
-        # 计算总耗时
-        total_time = time.time() - start_time
+    ip_list = get_ip_addresses(ip_text)
+    if not ip_list:
+        return
 
-        # 生成报告文件
-        report_file = os.path.join(backup_folder, "backup_report.txt")
-        with open(report_file, 'w', encoding='utf-8') as f:
-            f.write("配置备份报告\n")
-            f.write("=" * 50 + "\n\n")
-            f.write(f"备份时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"总设备数: {len(results)}\n")
-            f.write(f"成功数量: {sum(1 for r in results if r['status'] == 'success')}\n")
-            f.write(f"失败数量: {sum(1 for r in results if r['status'] == 'failed')}\n")
-            f.write(f"总耗时: {total_time:.2f} 秒\n\n")
-            
-            f.write("备份详情:\n")
-            f.write("-" * 50 + "\n")
-            for r in results:
-                status = "成功" if r['status'] == 'success' else "失败"
-                f.write(f"IP地址: {r['host']}\n")
-                f.write(f"状态: {status}\n")
-                if r['status'] == 'success':
-                    f.write(f"文件名: {r['filename']}\n")
-                else:
-                    f.write(f"错误信息: {r['message']}\n")
-                f.write("-" * 50 + "\n")
+    start_backup(ip_list, username, password, progress_bar)
 
-        # 打印总结
-        print("\n" + "="*50)
-        print("备份任务完成!")
-        print("="*50)
-        success_count = sum(1 for r in results if r['status'] == 'success')
-        print(f"\n总计: {len(results)} 个设备")
-        print(f"成功: {success_count} 个")
-        print(f"失败: {len(results) - success_count} 个")
-        print(f"总耗时: {total_time:.2f} 秒")
-        print(f"\n备份文件保存在: {os.path.abspath(backup_folder)}")
-        print(f"详细报告已保存到: {report_file}")
+# 创建主窗口
+root = tk.Tk()
+root.title("华为设备配置备份")
 
-        # 打印失败的设备
-        failed = [r for r in results if r['status'] == 'failed']
-        if failed:
-            print("\n失败的设备:")
-            for r in failed:
-                print(f"- {r['host']}: {r['message']}")
+# 创建字体对象
+custom_font = font.Font(family="Trebuchet MS", size=14)  # 设置字体为 Helvetica，大小为 14
 
-        input("\n按回车键退出...")
+# 设置窗口尺寸
+root.geometry("600x450")  # 宽度600，高度400
 
-    except KeyboardInterrupt:
-        print("\n\n程序被用户中断")
-    except Exception as e:
-        print(f"\n发生错误: {str(e)}")
-        input("\n按回车键退出...")
+# 创建标签页
+notebook = ttk.Notebook(root)
+notebook.pack(fill='both', expand=True)
 
-if __name__ == "__main__":
-    # 检查必要模块
-    try:
-        import netmiko
-    except ImportError:
-        print("请先安装netmiko模块:")
-        print("pip install netmiko")
-        input("\n按回车键退出...")
-        sys.exit(1)
-    
-    print("=== 华为交换机配置备份工具 ===")
-    main()
+# 创建备份页面
+backup_frame = ttk.Frame(notebook)
+notebook.add(backup_frame, text="备份")
+
+# 创建输入框
+tk.Label(backup_frame, text="IP地址（单个、地址段或范围）:").pack(pady=5)
+ip_text_area = tk.Text(backup_frame, height=10, width=40)
+ip_text_area.pack(pady=5)
+
+tk.Label(backup_frame, text="用户名:").pack(pady=5)
+username_entry = tk.Entry(backup_frame)
+username_entry.pack(pady=5)
+
+tk.Label(backup_frame, text="密码:").pack(pady=5)
+password_entry = tk.Entry(backup_frame, show='*')
+password_entry.pack(pady=5)
+
+# 创建备份按钮
+backup_button = tk.Button(backup_frame, text="开始备份", command=on_backup)
+backup_button.pack(pady=10)
+
+# 创建进度条
+progress_bar = ttk.Progressbar(backup_frame, mode='indeterminate')
+progress_bar.pack(pady=10)
+
+# 创建说明页面
+info_frame = ttk.Frame(notebook)
+notebook.add(info_frame, text="说明")
+
+# 添加说明文本
+info_text = """\
+本程序用于备份华为设备的配置文件。
+请在“备份”标签页中输入设备的IP地址、用户名和密码，然后点击“开始备份”按钮。
+应用程序会自动在当前目录下生存一个名为“backup”的文件夹，用于存放备份文件。
+备份文件的命名规则为：年月日-IP地址.cfg
+                                      
+                                      
+                                                                 -----Author: TAO-----
+"""
+info_label = tk.Label(info_frame, text=info_text, font=custom_font,justify='left', wraplength=600, padx=10, pady=10)
+info_label.pack(pady=10)
+
+# 运行主循环
+root.mainloop()
